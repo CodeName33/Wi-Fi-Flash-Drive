@@ -2,7 +2,7 @@
 Pseudo USB Flash Drive that gets it contents from PC by WiFi (Based on ESP32-S2)
 
 # How it works
-This is ESP32-S2 based USB device that will be recognized as USB Drive but all drive contents getting from server by wifi. You can share folder on servet and it will create pseudo FAT32 image (this is not real image, it will not be written on disk or memory, it can be huge size, 500gb or etc. and it will be created very fast).
+This is ESP32-S2 based USB device that will be recognized as USB Drive but all drive contents getting from server by wifi. You can share folder on servet and it will create pseudo FAT32 image (this is not real image, it will not be written on disk or memory, it can be huge size, 500gb or etc. and it will be created very fast). For now server part is for Windows only (cause sockets in c++, but i don't think it's a big problem to fix it for working with other os).
 
 # Problems
 ESP32-S2 WiFi is not fast, i can reach only 2-2.5Mbits/sec max. So it's slow :(
