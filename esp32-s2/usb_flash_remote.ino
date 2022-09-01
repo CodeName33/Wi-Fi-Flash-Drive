@@ -37,6 +37,21 @@ struct remote_request
 	uint32_t length;
 } __attribute__((packed));
 
+struct init_answer
+{
+	unsigned int sectors_count = 0;
+	unsigned int clusters_count = 0;
+	unsigned int files_count = 0;
+	unsigned int fat_first_sector = 0;
+	unsigned int reserved[4] = {};
+} __attribute__((packed));
+
+struct psram_file_sectors_buffer
+{
+	int32_t* buffer = nullptr;
+	uint32_t size = 0;
+};
+
 USBMSC MSC;
 WiFiClient client;
 
@@ -76,13 +91,75 @@ struct sectors_buffer
 	byte buffer[BUFFER_SIZE];
 };
 
+init_answer answer = {};
 sectors_buffer g_buffer = {};
+psram_file_sectors_buffer psram_file_sectors = {};
+
+bool check_psram(uint32_t lba, uint32_t offset, void* buffer, uint32_t bufsize)
+{
+	if (psram_file_sectors.size > 0)
+	{
+		if (lba >= answer.fat_first_sector && lba + bufsize / DISK_SECTOR_SIZE <= answer.fat_first_sector + answer.clusters_count * 4 / DISK_SECTOR_SIZE)
+		{
+			unsigned int first_gen_sector = (lba - answer.fat_first_sector) * (DISK_SECTOR_SIZE / 4) + (offset / 4);
+
+			if (first_gen_sector > psram_file_sectors.buffer[0])
+			{
+				unsigned int gen_sector_count = bufsize / 4;
+				unsigned int* buffer4 = (unsigned int*)buffer;
+				bool inside = false;
+
+				
+
+				unsigned int current_file_index = 0;
+				for (unsigned int i = 1; i < psram_file_sectors.size; i++)
+				{
+					if (psram_file_sectors.buffer[i] > first_gen_sector)
+					{
+						current_file_index = i;
+						unsigned int next_end = psram_file_sectors.buffer[current_file_index];
+						while (gen_sector_count)
+						{
+							if (first_gen_sector == next_end)
+							{
+								*buffer4++ = 0x0FFFFFF8;
+								current_file_index++;
+								if (current_file_index < psram_file_sectors.size)
+								{
+									next_end = psram_file_sectors.buffer[current_file_index];
+									
+								}
+								else
+								{
+									first_gen_sector++;
+									gen_sector_count--;
+									while (gen_sector_count)
+									{
+										*buffer4++ = 0;
+										gen_sector_count--;
+									}
+									return true;
+								}
+							}
+							else
+							{
+								*buffer4++ = first_gen_sector + 1;
+							}
+							first_gen_sector++;
+							gen_sector_count--;
+						}
+						return true;
+					}
+				}
+			}
+		}
+	}
+	return false;
+}
 
 static int32_t onRead(uint32_t lba, uint32_t offset, void* buffer, uint32_t bufsize) {
 	//HWSerial.printf("MSC READ: lba: %u, offset: %u, bufsize: %u\n", lba, offset, bufsize);
 	//memcpy(buffer, msc_disk[lba] + offset, bufsize);
-
-
 
 	while (WiFi.status() != WL_CONNECTED) {
 		delay(500);
@@ -110,7 +187,30 @@ static int32_t onRead(uint32_t lba, uint32_t offset, void* buffer, uint32_t bufs
 		}
 	}
 
+	uint32_t ps_begin = micros();
+	static uint ps_count = 0;
+	static uint ps_time = 0;
+	static uint ps_size = 0;
+	/*
+	if (check_psram(lba, offset, buffer, bufsize))
+	{
+		ps_count++;
+		ps_time += micros() - ps_begin;
+		ps_size += bufsize;
+		static uint last_psram_message = 0;
+		if (millis() - last_psram_message > 1000)
+		{
+			Serial.printf("psraddr: %u*1000, avg: %umcs, cnt: %u, sz: %u\r\n", (uint)(((uint64_t)lba * DISK_SECTOR_SIZE + offset) / 1000), ps_time / ps_count, ps_count, ps_size);
+			last_psram_message = millis();
+			ps_count = 0;
+			ps_time = 0;
+			ps_size = 0;
+		}
+		return bufsize;
+	}
+	//*/
 	
+
 	while (g_buffer.status == BUFFER_STATUS_IN_REQUEST || g_buffer.status == BUFFER_STATUS_NEED_REQUEST)
 	{
 		delay(1);
@@ -206,7 +306,7 @@ void indicator()
 	//if (client)
 }
 
-void receiveSectorsCount()
+void receiveInit()
 {
 	remote_request request = { 0, 0 };
 	if (client.write((byte*)&request, sizeof(request)) != sizeof(request))
@@ -220,9 +320,47 @@ void receiveSectorsCount()
 		if (client.available())
 		{
 			uint32_t DISK_SECTOR_COUNT_PREV = DISK_SECTOR_COUNT;
-			if (client.readBytes((byte*)&DISK_SECTOR_COUNT, 4) == 4)
+			client.setTimeout(0);
+			if (client.readBytes((byte*)&answer, sizeof(answer)) == sizeof(answer))
 			{
-				Serial.printf("Received drive sectors count: %u\r\n", (uint32_t)DISK_SECTOR_COUNT);
+				uint32_t psram = ESP.getPsramSize();
+				if (psram)
+				{
+					Serial.print("PSRAM: "); Serial.println(ESP.getPsramSize());
+					Serial.print("clusters_count: "); Serial.println(answer.clusters_count);
+					Serial.print("fat_first_sector: "); Serial.println(answer.fat_first_sector);
+					Serial.print("files_count: "); Serial.println(answer.files_count);
+					Serial.print("sectors_count: "); Serial.println(answer.sectors_count);
+					//delay(1000);
+					if (psram_file_sectors.buffer)
+					{
+						free(psram_file_sectors.buffer);
+						psram_file_sectors.buffer = nullptr;
+					}
+					psram_file_sectors.buffer = (int*)ps_malloc(answer.files_count * 4 + 4);
+					if (psram_file_sectors.buffer != nullptr)
+					{
+						psram_file_sectors.size = answer.files_count + 1;
+					}
+					Serial.print("psram_file_sectors.buffer: "); Serial.println((uint32_t)psram_file_sectors.buffer);
+					//delay(1000);
+				}
+				for (int i = 0; i < psram_file_sectors.size; i++)
+				{
+					uint32_t addr;
+					if (client.readBytes((byte*)&addr, 4) != 4)
+					{
+						break;
+					}
+					if (psram_file_sectors.size)
+					{
+						psram_file_sectors.buffer[i] = addr - 1;
+					}
+				}
+				DISK_SECTOR_COUNT = answer.sectors_count;
+
+				if (client.readBytes((byte*)&answer, sizeof(answer)) == sizeof(answer))
+				Serial.printf("Received drive sectors count: %u, psram: %u\r\n", (uint32_t)DISK_SECTOR_COUNT, psram_file_sectors.size);
 				if (DISK_SECTOR_COUNT != DISK_SECTOR_COUNT_PREV && DISK_SECTOR_COUNT_PREV != 0)
 				{
 					PRINTLN(F("Drive sectors count changed, rebooting..."));
@@ -436,8 +574,9 @@ void setup() {
 
 	WiFi.mode(WIFI_STA);
 	WiFi.setSleep(WIFI_PS_NONE);
-	esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW_HT40);
-	esp_err_t e = esp_wifi_config_80211_tx_rate(WIFI_IF_STA, WIFI_PHY_RATE_MCS7_SGI);
+	//esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW_HT40);
+	//esp_err_t e = esp_wifi_config_80211_tx_rate(WIFI_IF_STA, WIFI_PHY_RATE_MCS7_SGI);
+	WiFi.setTxPower(WIFI_POWER_19_5dBm);
 	//Serial.printf("esp_wifi_config_80211_tx_rate: %u\n", (uint32_t)e);
 	WiFi.begin(Settings::SSID.c_str(), Settings::SSIDPassword.c_str());
 	while (WiFi.status() != WL_CONNECTED) {
@@ -464,7 +603,7 @@ void setup() {
 			if (client.connected())
 			{
 				Serial.println(F("Connected to server"));
-				receiveSectorsCount();
+				receiveInit();
 			}
 		}
 
@@ -494,6 +633,9 @@ void setup() {
 	USBSerial.begin(115200);
 	USB.begin();
 
+	Serial.print("PSRAM Total: "); Serial.println(ESP.getPsramSize());
+	Serial.print("PSRAM  Free: "); Serial.println(ESP.getFreePsram());
+	
 }
 
 
@@ -501,6 +643,7 @@ uint32_t lbaDebug = 0;
 uint32_t debugTime = 0;
 
 bool connected = true;
+
 
 void loop()
 {
@@ -532,7 +675,7 @@ void loop()
 				//client.setNoDelay(true);
 				PRINTLN(F("Connected to server"));
 				g_buffer.status = BUFFER_STATUS_NONE;
-				receiveSectorsCount();
+				receiveInit();
 				connected = true;
 				break;
 			}
@@ -540,11 +683,10 @@ void loop()
 		indicator();
 	}
 
-
 	if (g_buffer.status == BUFFER_STATUS_NEED_REQUEST)
 	{
-		remote_request request = { (g_buffer.lba)*DISK_SECTOR_SIZE + g_buffer.offset, g_buffer.bufsize };
-
+		remote_request request = { g_buffer.lba * DISK_SECTOR_SIZE + g_buffer.offset, g_buffer.bufsize };
+		debugTime = millis();
 		if (client.write((byte*)&request, sizeof(request)) != sizeof(request))
 		{
 			client.stop();
@@ -556,6 +698,7 @@ void loop()
 			g_buffer.status = BUFFER_STATUS_IN_REQUEST;
 			g_buffer.recv_offset = 0;
 			g_buffer.recv_len = g_buffer.bufsize;
+			
 		}
 	}
 
@@ -580,8 +723,8 @@ void loop()
 		}
 
 		
-
-		//HWSerial.printf("%u WiFi Done (%u)\n", millis(), millis() - debugTime);
+		
+		//HWSerial.printf("WiFi Done (%u)\r\n", millis() - debugTime);
 
 		//Serial.printf("buffers[%u] done on lba = %u\n", (uint32_t)i, (uint32_t)buffers[i].lba);
 	}

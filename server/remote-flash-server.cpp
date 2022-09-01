@@ -250,6 +250,15 @@ struct remote_request
     uint32_t length;
 };
 
+struct init_answer
+{
+    unsigned int sectors_count;
+    unsigned int clusters_count;
+    unsigned int files_count;
+    unsigned int fat_first_sector;
+    unsigned int reserved[4];
+};
+
 #pragma pack(0)
 
 
@@ -292,6 +301,7 @@ struct SVIRTUAL_FILE
     __int64 addressBegin = 0;
     __int64 addressEnd = 0;
     __int64 fileSize = 0;
+    unsigned int clusterBegin = 0;
     FILE* file_handle = nullptr;
 };
 
@@ -311,6 +321,9 @@ private:
     __int64 image_size = 0;
     unsigned int bytes_per_cluster = 0;
     unsigned int bytes_per_sector = 0;
+    unsigned int first_fat_sector = 0;
+    unsigned int total_clusters = 0;
+    unsigned int first_free_cluster = 0;
 public:
     std::string volumeLabel;
 private:
@@ -459,6 +472,9 @@ private:
         image_size = 0;
         bytes_per_cluster = 0;
         bytes_per_sector = 0;
+        first_fat_sector = 0;
+        total_clusters = 0;
+        first_free_cluster = 0;
     }
 
     void list_recursive(const fs::path& directory, std::vector<std::map<std::wstring, SDIRECTORY_ENTRY>> &files, std::vector<unsigned int> &directory_enties, __int64 &total_size, unsigned int &total_files_count)
@@ -560,7 +576,7 @@ public:
 
         for (unsigned int count : directory_entries)
         {
-            number_clusters_dirs += count * 32 / bytes_per_cluster + (count * 32 % bytes_per_cluster ? 1 : 0);
+            number_clusters_dirs += (count == 0 ? 1 :  count * 32 / bytes_per_cluster + (count * 32 % bytes_per_cluster ? 1 : 0));
         }
 
         unsigned int number_clusters_data = total_size / bytes_per_cluster + total_files_count;
@@ -601,11 +617,11 @@ public:
         
         unsigned int root_dir_sectors = ((fat32.maximumRootDirectoryEnties * 32) + (fat32.bytesPerSector - 1)) / fat32.bytesPerSector;
         unsigned int first_data_sector = mbr.partitionEntry1.sectorsBetweenMBRAndPartition + fat32.reservedSectors + (fat32.numberCopiesFat * fat32.numberOfSectorsPerFat) + root_dir_sectors;
-        unsigned int first_fat_sector = mbr.partitionEntry1.sectorsBetweenMBRAndPartition + fat32.reservedSectors;
+        first_fat_sector = mbr.partitionEntry1.sectorsBetweenMBRAndPartition + fat32.reservedSectors;
 
         unsigned int data_sectors = fat32.numberOfSectorsInPartition - (fat32.reservedSectors + (fat32.numberCopiesFat * fat32.numberOfSectorsPerFat) + root_dir_sectors);
 
-        unsigned int total_clusters = data_sectors / fat32.sectorsPerCluster;
+        total_clusters = data_sectors / fat32.sectorsPerCluster;
 
         fat32.sectorNumberBackupBoot = fat32.clusterNumberOfRootDir + number_clusters_dirs;
 
@@ -695,10 +711,12 @@ public:
                     //std::cout << "Storing file" << fs::path(it.first) << ", first cluster: " << alloc_cluster << ", byte: " << ((((__int64)alloc_cluster - 2) * fat32.sectorsPerCluster) + first_data_sector) * bytes_per_sector << std::endl;
 
                     unsigned int begin_cluster = alloc_cluster;
+                    virtual_file.clusterBegin = alloc_cluster;
                     virtual_file.addressBegin = ((((__int64)alloc_cluster - 2) * fat32.sectorsPerCluster) + first_data_sector) * bytes_per_sector;
                     alloc_cluster += (it.second.entry.DIR_FileSize / bytes_per_cluster) + (it.second.entry.DIR_FileSize % bytes_per_cluster ? 1 : 0);
                     virtual_file.addressEnd = (((__int64)(alloc_cluster - 2) * fat32.sectorsPerCluster) + first_data_sector) * bytes_per_sector - 1;
                     virtual_file.fileSize = it.second.entry.DIR_FileSize;
+                    first_free_cluster = alloc_cluster;
 
                     virtual_files.push_back(virtual_file);
 
@@ -712,7 +730,7 @@ public:
             }
             directory_index++;
             FAT_table[dir_offset_cluster] = 0x0FFFFFF8;
-            if (dir_bytes > 0)
+            if (dir_bytes > 0 || directory_files.size() == 0)
             {
                 dir_offset_cluster++;
             }
@@ -792,6 +810,24 @@ public:
             }
         }
         return bytes_read;
+    }
+
+    std::vector<byte> get_init_answer()
+    {
+        std::vector<byte> answer_data;
+        answer_data.resize(sizeof(init_answer) + virtual_files.size() * 4 + 4);
+        init_answer* answer = (init_answer*)&answer_data[0];
+        answer->sectors_count = (unsigned int)(image_size / bytes_per_sector);
+        answer->fat_first_sector = first_fat_sector;
+        answer->files_count = virtual_files.size();
+        answer->clusters_count = total_clusters;
+        unsigned int *files_clusters = (unsigned int*)&answer_data[sizeof(init_answer)];
+        for (const SVIRTUAL_FILE& file : virtual_files)
+        {
+            *files_clusters++ = file.clusterBegin;
+        }
+        *files_clusters = first_free_cluster;
+        return answer_data;
     }
 
     void debug_test_image()
@@ -1098,6 +1134,7 @@ namespace Settings
 int main(int argc, char** argv)
 {
     setlocale(LC_ALL, "Russian");
+    system("title Remote Flash Server");
 
     
 
@@ -1237,9 +1274,11 @@ int main(int argc, char** argv)
 
             if (request.length == 0)
             {
-                unsigned int sectors_count = fat32image.get_sectors_count();
-                std::cout << "Client: Sectors Count request (" << sectors_count << ")" << std::endl;
-                if (send(new_socket, (char*)&sectors_count, 4, 0) != 4)
+                //unsigned int sectors_count = fat32image.get_sectors_count();
+                std::vector<byte> answer_data = fat32image.get_init_answer();
+                std::cout << "Client: Init request" << std::endl;
+
+                if (send(new_socket, (char*)&answer_data[0], answer_data.size(), 0) != answer_data.size())
                 {
                     std::cout << "Error: Cant send data to client" << std::endl;
                     closed = true;
