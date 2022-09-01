@@ -42,7 +42,7 @@ run **remote-flash-server.exe** on server
 Connect your new male USB connector from ESP32-S2 (not board's built in UART USB, but you can connect it to for debug, but i recommeend in this case disconnect 5v and GND from new USB connector) to your target device. If you use ESP-12K with built-in led in GPIO2 it will display status:
 - fast blink (3 times per second) - trying to connect WiFi
 - slow blink (1 times per second) - WiFi connected, trying to connect server
-- led is always on - connected to server, no data transfer
+- led is always on - connected to server, no data transfer or FAT table data transfer from internal memory
 - superfast blink (8-10 times per second) - all ok, data transfer goes (you can see data transfer in server application console)
 
 # Changing configuration on ESP device
