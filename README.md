@@ -33,6 +33,7 @@ Upload firmware to your ESP32-S2 over board's build in UART Micro/TypeC USB usin
 Change settings on server "**remote-flash-server.config**":  
 > path=YOUR_SHARING_PATH  
 > port=PORT (must be same as on board config)
+> label=FLASH_LABEL
 
 
 run **remote-flash-server.exe** on server
