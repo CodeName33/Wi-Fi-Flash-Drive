@@ -311,6 +311,8 @@ private:
     __int64 image_size = 0;
     unsigned int bytes_per_cluster = 0;
     unsigned int bytes_per_sector = 0;
+public:
+    std::string volumeLabel;
 private:
     
     void create_short_name(const fs::path &file_name, char* short_file_name, std::map<std::string, unsigned int> & short_file_names)
@@ -533,7 +535,10 @@ public:
         list_recursive(directory, directories, directory_entries, total_size, total_files_count);
         {
             FAT32_DIR_ENTRY entry = {};
-            memcpy(entry.DIR_Name, "VIRTUAL FAT", 11);
+            memset(entry.DIR_Name, ' ', 11);
+            std::string label = volumeLabel.substr(0, 11);
+            memcpy(entry.DIR_Name, &label[0], label.size());
+            //memcpy(entry.DIR_Name, "VIRTUAL FAT", 11);
             entry.DIR_Attr = VOLUME_ID;
             directories[0][L":entry"].entry = entry;
             directory_entries[0]++;
@@ -1083,12 +1088,18 @@ private:
     }
 };
 
+namespace Settings
+{
+    unsigned int port = 8085;
+    fs::path content_path = "L:\\Video";
+    std::string volume_label = "VIRTUAL FAT";
+}
+
 int main(int argc, char** argv)
 {
     setlocale(LC_ALL, "Russian");
 
-    unsigned int port = 8085;
-    fs::path content_path = "L:\\Video";
+    
 
     fs::path executable_path(argv[0]);
 
@@ -1107,24 +1118,29 @@ int main(int argc, char** argv)
                 std::string value = line.substr(line.find('=') + 1);
                 if (key == "path")
                 {
-                    content_path = value;
+                    Settings::content_path = value;
                 }
                 else if (key == "port")
                 {
-                    port = std::stoi(value);
+                    Settings::port = std::stoi(value);
+                }
+                else if (key == "label")
+                {
+                    Settings::volume_label = value;
                 }
             }
         }
     }
 
-    if (!fs::exists(content_path))
+    if (!fs::exists(Settings::content_path))
     {
-        std::cout << "Error: path " << content_path << " not exist" << std::endl;
+        std::cout << "Error: path " << Settings::content_path << " not exist" << std::endl;
         return 1;
     }
 
     CFAT32 fat32image;
-    fat32image.create(content_path);
+    fat32image.volumeLabel = Settings::volume_label;
+    fat32image.create(Settings::content_path);
 
     /*
     FILE* f = fopen("V:\\VFLASH_VURTUAL_DUMP.IMG", "wb");
@@ -1166,20 +1182,20 @@ int main(int argc, char** argv)
     
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = htonl(INADDR_ANY);
-    address.sin_port = htons(port);
+    address.sin_port = htons(Settings::port);
 
     if (bind(server_fd, (struct sockaddr*)&address, sizeof(address)) < 0)
     {
-        std::cout << "Error: Can't bind on port " << port << std::endl;
+        std::cout << "Error: Can't bind on port " << Settings::port << std::endl;
         exit(EXIT_FAILURE);
     }
     if (listen(server_fd, 3) < 0)
     {
-        std::cout << "Error: Can't listen on port " << port << std::endl;
+        std::cout << "Error: Can't listen on port " << Settings::port << std::endl;
         exit(EXIT_FAILURE);
     }
 
-    std::cout << "Server: Started on port " << port << std::endl;
+    std::cout << "Server: Started on port " << Settings::port << std::endl;
 
     while ((new_socket = accept(server_fd, (struct sockaddr*)&address, &addrlen)) >= 0)
     {
