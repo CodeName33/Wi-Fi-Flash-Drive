@@ -680,6 +680,7 @@ void loop()
 				break;
 			}
 		}
+		serial();
 		indicator();
 	}
 
