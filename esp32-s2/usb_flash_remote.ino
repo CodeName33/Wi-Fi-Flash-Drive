@@ -337,7 +337,7 @@ void receiveInit()
 						free(psram_file_sectors.buffer);
 						psram_file_sectors.buffer = nullptr;
 					}
-					psram_file_sectors.buffer = (int*)ps_malloc(answer.files_count * 4 + 4);
+					psram_file_sectors.buffer = (int32_t*)ps_malloc(answer.files_count * 4 + 4);
 					if (psram_file_sectors.buffer != nullptr)
 					{
 						psram_file_sectors.size = answer.files_count + 1;
